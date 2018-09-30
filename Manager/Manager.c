@@ -19,12 +19,10 @@ typedef struct pids {
 
 /* Check if processes are running */
 int checker(pids_t **head, char *dirname) {
-	if (kill((*head)->pid, 0) == 0) {
-		/* process is running or a zombie */
-		return 0;
-	}
+	if (kill((*head)->pid, 0) == 0) return 0;	// Process is running or a zombie
 	else if (errno == ESRCH) {
-		/* no process with the given pid is running */
+		
+		/* No process with the given pid is running */
 		int i, num = 0;
 		size_t len;
 		char *res = NULL;
@@ -34,35 +32,22 @@ int checker(pids_t **head, char *dirname) {
 		sprintf(path, "%s/%s", dirname, (*head)->name);
 		fp = popen(path, "r");
 		free(path);
-		if (fp == NULL) {
-			/* File not found */
-			return 2;
-		}
+		if (fp == NULL) return 2;	// File not found
 		while ((num = reader(fp, &res, CHUNK))) {
-			if (pclose(fp) / 256 == 127) {
-				/* File not found */
-				return 2;
-			}
+			if (pclose(fp) / 256 == 127) return 2;	//File not found
 			return (num*(-1)) - 1;
 		}
-		if (pclose(fp) / 256 == 127) {
-			/* File not found */
-			return 2;
-		}
+		if (pclose(fp) / 256 == 127) return 2;	//File not found
+
 		res[strcspn(res, "\n")] = 0;
 		len = strlen(res);
 		num = 0;
-		for (i = 0; (unsigned int)i < len; i++) {
-			num = num * 10 + (res[i] - '0');
-		}
+		for (i = 0; (unsigned int)i < len; i++) num = num * 10 + (res[i] - '0');
 		(*head)->pid = num;
 		free(res);
 		return 1;
 	}
-	else {
-		/* some other error... use perror("...") or strerror(errno) to report */
-		return -1;
-	}
+	else return -1;	// some other error... use perror("...") or strerror(errno) to report
 }
 
 /* First function to be called, finds scripts and starts them */
@@ -141,6 +126,7 @@ int starter(pids_t **head, char *dirname) {
 
 /* Check if a new scripts exists in the directory */
 int updater(pids_t **head, char *dirname) {
+	syslog(LOG_DEBUG, "Updating...");
 	DIR *pDir;
 	struct dirent *pDirent;
 	pids_t *current;
@@ -148,24 +134,39 @@ int updater(pids_t **head, char *dirname) {
 	pDir = opendir(dirname);
 	while ((pDirent = readdir(pDir)) != NULL) {
 		if (pDirent->d_name[0] == '.') continue;
-		
-		current = *head;
-		while (current != NULL) {
-			if (strcmp(pDirent->d_name, current->name) == 0) break;
 
-			else if (current->next == NULL) {
-				current->next = malloc(sizeof(pids_t));
-				if (current->next == NULL) {
-					syslog(LOG_ERR, "Cannot create process entry");
-					continue;
+		if (*head == NULL) {
+			*head = malloc(sizeof(pids_t));
+			if (*head == NULL) {
+				syslog(LOG_ERR, "Cannot create process entry");
+				continue;
+			}
+			current = *head;
+			snprintf(current->name, CHUNK, "%s", pDirent->d_name);
+			current->pid = 32769;
+			current->next = NULL;
+			syslog(LOG_WARNING, "Added process %s as head", current->name);
+		}
+
+		else {
+			current = *head;
+			while (current != NULL) {
+				if (strcmp(pDirent->d_name, current->name) == 0) break;
+
+				else if (current->next == NULL) {
+					current->next = malloc(sizeof(pids_t));
+					if (current->next == NULL) {
+						syslog(LOG_ERR, "Cannot create process entry");
+						continue;
+					}
+					current = current->next;
+					snprintf(current->name, CHUNK, "%s", pDirent->d_name);
+					current->pid = 32769;
+					current->next = NULL;
+					syslog(LOG_WARNING, "Added process %s", current->name);
 				}
 				current = current->next;
-				snprintf(current->name, CHUNK, "%s", pDirent->d_name);
-				current->pid = 32769;
-				current->next = NULL;
-				syslog(LOG_WARNING, "Added process %s", current->name);
 			}
-			current = current->next;
 		}
 
 	}
@@ -179,7 +180,7 @@ int main() {
 	pids_t *removed, *current, *head = NULL;
 	char directory[] = "startup_scripts";
 	openlog("Manager", LOG_PERROR | LOG_PID | LOG_NDELAY, 0);
-	setlogmask(LOG_UPTO(LOG_WARNING));
+	setlogmask(LOG_UPTO(LOG_DEBUG));
 
 	/* Obtain initial list of processes and start them */
 	if (starter(&head, directory) == 0) {
@@ -188,9 +189,10 @@ int main() {
 	}
 
 	while (1) { // Keep this program alive
-		current = head;
 		/* Check if list changed and if processes are still running. If they stopped, restart them */
 		updater(&head, directory);
+		current = head;
+		syslog(LOG_INFO, "Loop");
 		while (current != NULL) {
 			syslog(LOG_NOTICE, "Testing %s with PID %d... ", current->name, current->pid);
 
@@ -218,7 +220,7 @@ int main() {
 					current->next = current->next->next;
 					free(removed);
 					syslog(LOG_WARNING, "Removed");
-					current = head;
+					current = current->next;
 				}
 
 			}
@@ -228,10 +230,10 @@ int main() {
 			else if (proc_status < -1) {
 				syslog(LOG_WARNING, "Error parsing output from %s", current->name);
 			}
-			current = current->next;
+			if (proc_status != 2) current = current->next;
 			sleep(1);
 		}
-		sleep(30);
+		sleep(5);
 	}
 	return 0;
 }
