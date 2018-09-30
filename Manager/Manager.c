@@ -180,7 +180,7 @@ int main() {
 	pids_t *removed, *current, *head = NULL;
 	char directory[] = "startup_scripts";
 	openlog("Manager", LOG_PERROR | LOG_PID | LOG_NDELAY, 0);
-	setlogmask(LOG_UPTO(LOG_DEBUG));
+	setlogmask(LOG_UPTO(LOG_WARNING));
 
 	/* Obtain initial list of processes and start them */
 	if (starter(&head, directory) == 0) {
