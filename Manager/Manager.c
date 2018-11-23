@@ -10,54 +10,62 @@
 
 #define CHUNK 16
 
+enum {RUNNING_OK, RESTARTED, SCRIPT_NOT_FOUND, SOME_ERROR};
+
+char directory[] = "startup_scripts";
+
 /* Hold process name and PID */
-typedef struct pids {
+typedef struct pid_s {
 	char name[CHUNK];
 	int pid;
-	struct pids * next;
+	struct pid_s * next;
 } pids_t;
 
-/* Check if processes are running */
-int checker(pids_t **head, char *dirname) {
-	if (kill((*head)->pid, 0) == 0) return 0;	// Process is running or a zombie
-	else if (errno == ESRCH) {
-		
-		/* No process with the given pid is running */
-		int i, num = 0;
-		size_t len;
-		char *res = NULL;
-		FILE *fp;
-		char *path = malloc(strlen(dirname) + strlen((*head)->name) + 2);
+/* Head of process list */
+pids_t *head = NULL;
 
-		sprintf(path, "%s/%s", dirname, (*head)->name);
-		fp = popen(path, "r");
-		free(path);
-		if (fp == NULL) return 2;	// File not found
-		while ((num = reader(fp, &res, CHUNK))) {
-			if (pclose(fp) / 256 == 127) return 2;	//File not found
-			return (num*(-1)) - 1;
-		}
-		if (pclose(fp) / 256 == 127) return 2;	//File not found
+int start_process(pids_t **current, char *name) {
+	int i, num = 0;
+	size_t len;
+	char *res = NULL;
+	FILE *fp;
+	char *path = malloc(strlen(directory) + strlen(name) + 2);
 
-		res[strcspn(res, "\n")] = 0;
-		len = strlen(res);
-		num = 0;
-		for (i = 0; (unsigned int)i < len; i++) num = num * 10 + (res[i] - '0');
-		(*head)->pid = num;
-		free(res);
-		return 1;
+	sprintf(path, "%s/%s", directory, name);
+	fp = popen(path, "r");
+	free(path);
+	if (fp == NULL) return SCRIPT_NOT_FOUND;	// File not found
+	while ((num = reader(fp, &res, CHUNK))) {
+		if (pclose(fp) / 256 == 127) return SCRIPT_NOT_FOUND;	//File not found
+		return (num*(-1)) - 1;
 	}
-	else return -1;	// some other error... use perror("...") or strerror(errno) to report
+	if (pclose(fp) / 256 == 127) return SCRIPT_NOT_FOUND;	//File not found
+
+	res[strcspn(res, "\n")] = 0;
+	len = strlen(res);
+	num = 0;
+	for (i = 0; (unsigned int)i < len; i++) num = num * 10 + (res[i] - '0');
+	(*current)->pid = num;
+	free(res);
+	return RUNNING_OK;
+}
+
+/* Check if processes are running */
+int checker(pids_t **current) {
+	if (kill((*current)->pid, 0) == 0) return RUNNING_OK;	// Process is running or a zombie
+	else if (errno == ESRCH) {
+		return start_process(current, (*current)->name);
+	}
+	else return SOME_ERROR;	// some other error... use perror("...") or strerror(errno) to report
 }
 
 /* First function to be called, finds scripts and starts them */
-int starter(pids_t **head, char *dirname) {
+int starter(char *dirname) {
 	DIR *pDir;
 	struct dirent *pDirent;
 	FILE *fp;
 	char *res, *path;
 	pids_t *current;
-	int len, i, num;
 
 	/* Open the given directory */
 	pDir = opendir(dirname);
@@ -67,57 +75,37 @@ int starter(pids_t **head, char *dirname) {
 		return 0;
 	}
 
+	pids_t *dummy = malloc(sizeof(pids_t));
+	if (dummy == NULL) {
+		syslog(LOG_ERR, "Cannot create dummy process");
+		closedir(pDir);
+		return 0;
+	}
+
 	while ((pDirent = readdir(pDir)) != NULL) {
 		if (pDirent->d_name[0] == '.') continue;
 
-		path = malloc(strlen(dirname) + strlen(pDirent->d_name) + 2);
-		sprintf(path, "%s/%s", dirname, pDirent->d_name);
+		if (start_process(&dummy, pDirent->d_name) == RUNNING_OK) {
 
-		fp = popen(path, "r");
-		free(path);
-		if (fp == NULL) {
-			syslog(LOG_ERR, "File not found");
-			continue;
-		}
-		while ((num = reader(fp, &res, CHUNK))) {
-			syslog(LOG_ERR, "Error reading output: %d", num);
-			continue;
-		}
-		if (pclose(fp) / 256 == 127) {
-			syslog(LOG_ERR, "File not found");
-			continue;
-		}
-
-		res[strcspn(res, "\n")] = 0;
-		len = strlen(res);
-		num = 0;
-		for (i = 0; i < len; i++) {
-			num = num * 10 + (res[i] - '0');
-		}
-		free(res);
-
-		if (*head == NULL) {
-			*head = malloc(sizeof(pids_t));
-			if (*head == NULL) {
-				syslog(LOG_ERR, "Cannot create process list");
-				closedir(pDir);
-				return 0;
+			if (head == NULL) {
+				head = malloc(sizeof(pids_t));
+				if (head == NULL) {
+					syslog(LOG_ERR, "Cannot create process list");
+					closedir(pDir);
+					return 0;
+				}
+				current = head;
 			}
-			current = *head;
-		}
-		else {
-			current->next = malloc(sizeof(pids_t));
-			if (current->next == NULL) {
-				syslog(LOG_ERR, "Cannot create process entry");
-				continue;
+			else {
+				current->next = malloc(sizeof(pids_t));
+				if (current->next == NULL) {
+					syslog(LOG_ERR, "Cannot create process entry");
+					continue;
+				}
+				current = current->next;
 			}
-			current = current->next;
+			*current = *dummy;
 		}
-
-		snprintf(current->name, CHUNK, "%s", pDirent->d_name);
-		current->pid = num;
-		current->next = NULL;
-
 	}
 	free(pDirent);
 	closedir(pDir);
@@ -125,7 +113,7 @@ int starter(pids_t **head, char *dirname) {
 }
 
 /* Check if a new scripts exists in the directory */
-int updater(pids_t **head, char *dirname) {
+int updater(char *dirname) {
 	syslog(LOG_DEBUG, "Updating...");
 	DIR *pDir;
 	struct dirent *pDirent;
@@ -135,13 +123,13 @@ int updater(pids_t **head, char *dirname) {
 	while ((pDirent = readdir(pDir)) != NULL) {
 		if (pDirent->d_name[0] == '.') continue;
 
-		if (*head == NULL) {
-			*head = malloc(sizeof(pids_t));
-			if (*head == NULL) {
+		if (head == NULL) {
+			head = malloc(sizeof(pids_t));
+			if (head == NULL) {
 				syslog(LOG_ERR, "Cannot create process entry");
 				continue;
 			}
-			current = *head;
+			current = head;
 			snprintf(current->name, CHUNK, "%s", pDirent->d_name);
 			current->pid = 32769;
 			current->next = NULL;
@@ -149,7 +137,7 @@ int updater(pids_t **head, char *dirname) {
 		}
 
 		else {
-			current = *head;
+			current = head;
 			while (current != NULL) {
 				if (strcmp(pDirent->d_name, current->name) == 0) break;
 
@@ -177,33 +165,33 @@ int updater(pids_t **head, char *dirname) {
 
 int main() {
 	int proc_status;
-	pids_t *removed, *current, *head = NULL;
+	pids_t *removed, *current;
 	char directory[] = "startup_scripts";
 	openlog("Manager", LOG_PERROR | LOG_PID | LOG_NDELAY, 0);
 	setlogmask(LOG_UPTO(LOG_WARNING));
 
 	/* Obtain initial list of processes and start them */
-	if (starter(&head, directory) == 0) {
+	if (starter(directory) == 0) {
 		fprintf(stderr, "Error starting scripts\n");
 		exit(EXIT_FAILURE);
 	}
 
 	while (1) { // Keep this program alive
 		/* Check if list changed and if processes are still running. If they stopped, restart them */
-		updater(&head, directory);
+		updater(directory);
 		current = head;
 		syslog(LOG_INFO, "Loop");
 		while (current != NULL) {
 			syslog(LOG_NOTICE, "Testing %s with PID %d... ", current->name, current->pid);
 
-			proc_status = checker(&current, directory);
-			if (proc_status == 0) {
+			proc_status = checker(&current);
+			if (proc_status == RUNNING_OK) {
 				syslog(LOG_NOTICE, "%s running OK", current->name);
 			}
-			else if (proc_status == 1) {
+			else if (proc_status == RESTARTED) {
 				syslog(LOG_WARNING, "%s restarted. PID %d\n", current->name, current->pid);
 			}
-			else if (proc_status == 2) {
+			else if (proc_status == SCRIPT_NOT_FOUND) {
 				syslog(LOG_ERR, "%s not running, script not found", current->name);
 				if (current == head) {
 					head = head->next;
@@ -224,10 +212,10 @@ int main() {
 				}
 
 			}
-			else if (proc_status == -1) {
+			else if (proc_status == SOME_ERROR) {
 				syslog(LOG_ERR, "Error: %s", strerror(errno));
 			}
-			else if (proc_status < -1) {
+			else if (proc_status < RUNNING_OK) {
 				syslog(LOG_WARNING, "Error parsing output from %s", current->name);
 			}
 			if (proc_status != 2) current = current->next;
