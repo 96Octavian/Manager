@@ -59,8 +59,8 @@ int checker(pids_t **current) {
 	else return SOME_ERROR;	// some other error... use perror("...") or strerror(errno) to report
 }
 
-/* First function to be called, finds scripts and starts them */
-int starter(char *dirname) {
+/* Opens the directory and updates script list */
+int lister(char *dirname) {
 	DIR *pDir;
 	struct dirent *pDirent;
 	FILE *fp;
@@ -75,37 +75,39 @@ int starter(char *dirname) {
 		return 0;
 	}
 
-	pids_t *dummy = malloc(sizeof(pids_t));
-	if (dummy == NULL) {
-		syslog(LOG_ERR, "Cannot create dummy process");
-		closedir(pDir);
-		return 0;
+	if (head == NULL) {
+		head = malloc(sizeof(pids_t));
+		if (head == NULL) {
+			syslog(LOG_ERR, "Cannot initiate list");
+			free(pDirent);
+			closedir();
+			return 0;
+		}
 	}
 
 	while ((pDirent = readdir(pDir)) != NULL) {
 		if (pDirent->d_name[0] == '.') continue;
 
-		if (start_process(&dummy, pDirent->d_name) == RUNNING_OK) {
+		current = head;
+		while (current != NULL) {
+			if (strcmp(pDirent->d_name, current->name) == 0) break;
 
-			if (head == NULL) {
-				head = malloc(sizeof(pids_t));
-				if (head == NULL) {
-					syslog(LOG_ERR, "Cannot create process list");
-					closedir(pDir);
-					return 0;
-				}
-				current = head;
-			}
-			else {
+			else if (current->next == NULL) {
 				current->next = malloc(sizeof(pids_t));
 				if (current->next == NULL) {
 					syslog(LOG_ERR, "Cannot create process entry");
 					continue;
 				}
 				current = current->next;
+				snprintf(current->name, CHUNK, "%s", pDirent->d_name);
+				current->pid = 32769;
+				current->next = NULL;
+				syslog(LOG_WARNING, "Added process %s", current->name);
+				break;
 			}
-			*current = *dummy;
+			current = current->next;
 		}
+
 	}
 	free(pDirent);
 	closedir(pDir);
