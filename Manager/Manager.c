@@ -60,7 +60,7 @@ int checker(pids_t **current) {
 }
 
 /* Opens the directory and updates script list */
-int lister(char *dirname) {
+int lister() {
 	DIR *pDir;
 	struct dirent *pDirent;
 	FILE *fp;
@@ -68,25 +68,30 @@ int lister(char *dirname) {
 	pids_t *current;
 
 	/* Open the given directory */
-	pDir = opendir(dirname);
+	pDir = opendir(directory);
 	if (pDir == NULL) {
-		syslog(LOG_ERR, "Cannot open directory \"%s\"\n", dirname);
+		syslog(LOG_ERR, "Cannot open directory \"%s\"\n", directory);
 		closedir(pDir);
 		return 0;
 	}
 
-	if (head == NULL) {
-		head = malloc(sizeof(pids_t));
-		if (head == NULL) {
-			syslog(LOG_ERR, "Cannot initiate list");
-			free(pDirent);
-			closedir();
-			return 0;
-		}
-	}
-
 	while ((pDirent = readdir(pDir)) != NULL) {
 		if (pDirent->d_name[0] == '.') continue;
+
+		if (head == NULL) {
+			head = malloc(sizeof(pids_t));
+			if (head == NULL) {
+				syslog(LOG_ERR, "Cannot initiate list");
+				free(pDirent);
+				closedir();
+				return 0;
+			}
+			snprintf(head->name, CHUNK, "%s", pDirent->d_name);
+			head->pid = 32769;
+			head->next = NULL;
+			syslog(LOG_WARNING, "Added process %s", head->name);
+			continue;
+		}
 
 		current = head;
 		while (current != NULL) {
