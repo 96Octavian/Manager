@@ -14,6 +14,8 @@ enum {RUNNING_OK, RESTARTED, SCRIPT_NOT_FOUND, SOME_ERROR};
 
 char directory[] = "startup_scripts";
 
+int pid_max;
+
 /* Hold process name and PID */
 typedef struct pid_s {
 	char name[CHUNK];
@@ -60,7 +62,7 @@ int checker(pids_t **current) {
 }
 
 /* Opens the directory and updates script list */
-int lister() {
+int add_script_to_list() {
 	DIR *pDir;
 	struct dirent *pDirent;
 	FILE *fp;
@@ -87,7 +89,7 @@ int lister() {
 				return 0;
 			}
 			snprintf(head->name, CHUNK, "%s", pDirent->d_name);
-			head->pid = 32769;
+			head->pid = pid_max;
 			head->next = NULL;
 			syslog(LOG_WARNING, "Added process %s", head->name);
 			continue;
@@ -105,7 +107,7 @@ int lister() {
 				}
 				current = current->next;
 				snprintf(current->name, CHUNK, "%s", pDirent->d_name);
-				current->pid = 32769;
+				current->pid = pid_max;
 				current->next = NULL;
 				syslog(LOG_WARNING, "Added process %s", current->name);
 				break;
@@ -119,73 +121,26 @@ int lister() {
 	return 1;
 }
 
-/* Check if a new scripts exists in the directory */
-int updater(char *dirname) {
-	syslog(LOG_DEBUG, "Updating...");
-	DIR *pDir;
-	struct dirent *pDirent;
-	pids_t *current;
-
-	pDir = opendir(dirname);
-	while ((pDirent = readdir(pDir)) != NULL) {
-		if (pDirent->d_name[0] == '.') continue;
-
-		if (head == NULL) {
-			head = malloc(sizeof(pids_t));
-			if (head == NULL) {
-				syslog(LOG_ERR, "Cannot create process entry");
-				continue;
-			}
-			current = head;
-			snprintf(current->name, CHUNK, "%s", pDirent->d_name);
-			current->pid = 32769;
-			current->next = NULL;
-			syslog(LOG_WARNING, "Added process %s as head", current->name);
-		}
-
-		else {
-			current = head;
-			while (current != NULL) {
-				if (strcmp(pDirent->d_name, current->name) == 0) break;
-
-				else if (current->next == NULL) {
-					current->next = malloc(sizeof(pids_t));
-					if (current->next == NULL) {
-						syslog(LOG_ERR, "Cannot create process entry");
-						continue;
-					}
-					current = current->next;
-					snprintf(current->name, CHUNK, "%s", pDirent->d_name);
-					current->pid = 32769;
-					current->next = NULL;
-					syslog(LOG_WARNING, "Added process %s", current->name);
-				}
-				current = current->next;
-			}
-		}
-
-	}
-	free(pDirent);
-	closedir(pDir);
-	return 1;
-}
-
 int main() {
 	int proc_status;
 	pids_t *removed, *current;
-	char directory[] = "startup_scripts";
 	openlog("Manager", LOG_PERROR | LOG_PID | LOG_NDELAY, 0);
 	setlogmask(LOG_UPTO(LOG_WARNING));
 
+	pid_max = max_pid() + 1;
+	if (pid_max < 0) {
+		fprintf(stderr, "No maximum PID retrieved, closing\n");
+		exit(EXIT_FAILURE);
+	}
 	/* Obtain initial list of processes and start them */
-	if (starter(directory) == 0) {
+	if (add_script_to_list() == 0) {
 		fprintf(stderr, "Error starting scripts\n");
 		exit(EXIT_FAILURE);
 	}
 
 	while (1) { // Keep this program alive
 		/* Check if list changed and if processes are still running. If they stopped, restart them */
-		updater(directory);
+		add_script_to_list();
 		current = head;
 		syslog(LOG_INFO, "Loop");
 		while (current != NULL) {
@@ -209,15 +164,13 @@ int main() {
 				else {
 					removed = current;
 					current = head;
-					while (current->next != removed) {
-						current = current->next;
-					}
+					while (current->next != removed) current = current->next;
 					current->next = current->next->next;
 					free(removed);
 					syslog(LOG_WARNING, "Removed");
 					current = current->next;
 				}
-
+				continue;
 			}
 			else if (proc_status == SOME_ERROR) {
 				syslog(LOG_ERR, "Error: %s", strerror(errno));
@@ -225,7 +178,7 @@ int main() {
 			else if (proc_status < RUNNING_OK) {
 				syslog(LOG_WARNING, "Error parsing output from %s", current->name);
 			}
-			if (proc_status != 2) current = current->next;
+			current = current->next;
 			sleep(1);
 		}
 		sleep(5);
