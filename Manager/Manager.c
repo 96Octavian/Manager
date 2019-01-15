@@ -85,7 +85,7 @@ int add_script_to_list() {
 			if (head == NULL) {
 				syslog(LOG_ERR, "Cannot initiate list");
 				free(pDirent);
-				closedir();
+				closedir(pDir);
 				return 0;
 			}
 			snprintf(head->name, CHUNK, "%s", pDirent->d_name);
